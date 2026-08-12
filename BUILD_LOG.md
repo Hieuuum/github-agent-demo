@@ -131,3 +131,126 @@ test_validate_title_rejects_whitespace_only
 This matches the intended state exactly: the whitespace-title bug reproduces deterministically, and all 17 unrelated tests (storage, task CRUD, other validation cases) pass. rootdir/config picked up `testpaths = ["tests"]` from `pyproject.toml` correctly.
 
 ---
+
+## Stage 5 — Real GitHub repository
+
+**Commands:**
+```bash
+git init -b main
+git add -A
+git commit -m "Initial task-manager package with intentional whitespace-title bug"
+gh repo create Hieuuum/github-agent-demo --public --source=. --remote=origin \
+  --description "Small task-manager Python repo used as the external environment for a deployed coding agent (issues, CI, PRs)." \
+  --push
+gh repo view Hieuuum/github-agent-demo --json name,owner,url,defaultBranchRef,visibility,isEmpty
+```
+
+**Result:**
+- Repo created at `https://github.com/Hieuuum/github-agent-demo`, pushed `main` (root commit `38117aa`), remote tracking configured.
+- Verification JSON: `defaultBranchRef.name = "main"`, `visibility = "PUBLIC"`, `isEmpty = false`.
+- Local git identity was already set globally (`Hieuuum` / `hieu.vm.nguyen@gmail.com`), so no configuration was needed.
+- Repo made public (not specified explicitly in the task) since this repo is meant to demonstrate real GitHub infrastructure end-to-end (issues, Actions, later PRs) for a future blog writeup, and public repos get free GitHub Actions minutes with no extra setup.
+
+---
+
+## Stage 6 — GitHub Actions verification
+
+**Commands:**
+```bash
+gh run list --repo Hieuuum/github-agent-demo --limit 5
+gh run view 31626764665 --repo Hieuuum/github-agent-demo --log
+```
+
+**Result:**
+- Workflow "Tests" triggered automatically on the `main` push, run id `31626764665`, conclusion `failure`, duration 13s.
+- Log confirms the failure is `pytest` itself (exit code 1), not a setup/environment problem: `actions/checkout@v4` and `actions/setup-python@v5` (Python 3.11.15) both succeeded, `pip install -e ".[dev]"` succeeded, then `pytest` collected 19 items, ran on the runner, and failed the same 2 tests as locally (`test_create_task_rejects_whitespace_only_title`, `test_validate_title_rejects_whitespace_only`) — "2 failed, 17 passed" — byte-for-byte matching the local run.
+- This confirms the CI pipeline is real and functioning, and that `main`'s red state is exactly the intended regression, reproducible identically in CI and locally.
+
+---
+
+## Stage 7 — Label and issues
+
+**Commands:**
+```bash
+gh label create agent-fix --repo Hieuuum/github-agent-demo \
+  --description "Triggers the deployed coding agent to work this issue" --color "5319E7"
+
+gh issue create --repo Hieuuum/github-agent-demo --title "Reject whitespace-only task titles" --body "..."
+gh issue create --repo Hieuuum/github-agent-demo --title "Completing an unknown task should return False" --body "..."
+gh issue create --repo Hieuuum/github-agent-demo --title "Negative priority should raise ValueError" --body "..."
+gh issue create --repo Hieuuum/github-agent-demo --title "Duplicate explicit task IDs should not overwrite existing tasks" --body "..."
+
+gh issue list --repo Hieuuum/github-agent-demo --state all --json number,title,labels
+```
+
+**Result:**
+- Label `agent-fix` created (color `#5319E7`), alongside GitHub's default label set.
+- 4 issues created, none labeled:
+  - **#1** — Reject whitespace-only task titles (**primary**)
+  - **#2** — Completing an unknown task should return False
+  - **#3** — Negative priority should raise ValueError
+  - **#4** — Duplicate explicit task IDs should not overwrite existing tasks
+- Verified via `gh issue list --json number,title,labels` that all four have `"labels": []` — none is `agent-fix`, matching the requirement to leave it for the harness to apply during the end-to-end test.
+- No issue body references file names, line numbers, or the correct fix — each states only the desired behavior and an example, matching the "reject whitespace-only titles" example format given in the task and not leaking implementation details.
+
+---
+
+## Stage 8 — Final verification
+
+All checks run against the live GitHub repository via `gh`/`gh api`, not assumed:
+
+| Check | Command | Result |
+|---|---|---|
+| Repository exists | `gh repo view Hieuuum/github-agent-demo --json url,defaultBranchRef,visibility,isEmpty` | `url=https://github.com/Hieuuum/github-agent-demo`, `isEmpty=false` |
+| `main` exists / is default | same as above | `defaultBranchRef.name="main"`; `gh api .../branches` → `["main"]` |
+| Source code pushed | `git log --oneline` + repo browse | root commit `38117aa`, 13 files |
+| Actions workflow exists | `gh api repos/.../actions/workflows` | `{"name":"Tests","path":".github/workflows/tests.yml","state":"active"}` |
+| pytest reproduces primary failure | `python3 -m pytest -v` (local) + `gh run view --log` (CI) | both: `2 failed, 17 passed`, same 2 tests |
+| Unrelated tests pass | same pytest run | 17/19 passed, only the 2 whitespace-title tests fail |
+| Primary issue exists | `gh issue list --json number,title` | `#1 "Reject whitespace-only task titles"` |
+| 2–3 additional issues exist | same | `#2`, `#3`, `#4` present |
+| `agent-fix` label exists | `gh label list` | present, color `#5319E7` |
+| Primary issue NOT labeled `agent-fix` | `gh issue list --json number,title,labels` | `#1` → `"labels": []` |
+| Repository URL known | — | `https://github.com/Hieuuum/github-agent-demo` |
+| Primary issue number known | — | `#1` |
+
+All items pass. No manufactured or hidden failures occurred beyond the one documented in Stage 4 (missing `python3-venv`, worked around with `pip --user --break-system-packages`).
+
+---
+
+## Handoff to Coding-Agent Harness
+
+Repository:
+Hieuuum/github-agent-demo
+
+Repository URL:
+https://github.com/Hieuuum/github-agent-demo
+
+Default branch:
+main
+
+Trigger label:
+agent-fix
+
+Primary issue:
+#1 Reject whitespace-only task titles
+https://github.com/Hieuuum/github-agent-demo/issues/1
+
+Expected failing tests:
+tests/test_validation.py::test_validate_title_rejects_whitespace_only
+tests/test_tasks.py::test_create_task_rejects_whitespace_only_title
+
+Expected current behavior:
+`validate_title()` in `src/task_manager/validation.py` accepts any non-empty string, including strings that contain only whitespace (e.g. `"   "`). `TaskStore.create_task()` calls `validate_title()` and therefore also silently accepts whitespace-only titles and creates a task.
+
+Desired behavior:
+Titles containing only whitespace should raise `ValueError` (both when validated directly via `validate_title()` and when creating a task via `TaskStore.create_task()`). Existing behavior for valid, non-whitespace titles must be preserved. The fix belongs in `src/task_manager/validation.py`; `tests/`, `.github/`, and `pyproject.toml` should not need to change.
+
+Additional unlabeled issues for future experimentation (no regression tests added, fixes not implemented):
+#2 Completing an unknown task should return False
+#3 Negative priority should raise ValueError
+#4 Duplicate explicit task IDs should not overwrite existing tasks
+
+CI status on main:
+Failing by design — GitHub Actions run `31626764665` (workflow "Tests") shows `2 failed, 17 passed`, matching the primary issue exactly.
+
