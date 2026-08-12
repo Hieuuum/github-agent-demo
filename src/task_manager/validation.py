@@ -5,8 +5,8 @@ def validate_title(title: str) -> None:
     """Raise ValueError if the title is not a usable string."""
     if not isinstance(title, str):
         raise ValueError("Title must be a string")
-    if len(title) == 0:
-        raise ValueError("Title must not be empty")
+    if not title.strip():
+        raise ValueError("Title must not be empty or whitespace-only")
 
 
 def validate_priority(priority: int) -> None:
